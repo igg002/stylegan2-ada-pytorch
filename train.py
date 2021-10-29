@@ -42,6 +42,7 @@ def setup_training_loop_kwargs(
     subset     = None, # Train with only N images: <int>, default = all
     mirror     = None, # Augment dataset with x-flips: <bool>, default = False
     mirrory    = None, # Augment dataset with y-flips: <bool>, default = False
+    is_16_bit  = None, # Set to true if the training set consists of 16-bit grayscale images: <bool>, default = False
 
     # Base config.
     cfg        = None, # Base config: 'auto' (default), 'stylegan2', 'paper256', 'paper512', 'paper1024', 'cifar'
@@ -109,7 +110,7 @@ def setup_training_loop_kwargs(
 
     assert data is not None
     assert isinstance(data, str)
-    args.training_set_kwargs = dnnlib.EasyDict(class_name='training.dataset.ImageFolderDataset', path=data, use_labels=True, max_size=None, xflip=False)
+    args.training_set_kwargs = dnnlib.EasyDict(class_name='training.dataset.ImageFolderDataset', path=data, use_labels=True, max_size=None, xflip=False, is_16_bit=False if is_16_bit is None else is_16_bit)
     args.data_loader_kwargs = dnnlib.EasyDict(pin_memory=True, num_workers=3, prefetch_factor=2)
     try:
         training_set = dnnlib.util.construct_class_by_name(**args.training_set_kwargs) # subclass of training.dataset.Dataset
@@ -153,6 +154,13 @@ def setup_training_loop_kwargs(
     if mirrory:
         desc += '-mirrory'
         args.training_set_kwargs.yflip = True
+    
+    if is_16_bit is None:
+        is_16_bit = False
+    assert isinstance(is_16_bit, bool)
+    if is_16_bit:
+        desc += '-16bit'
+        args.training_set_kwargs.is_16_bit = True
 
     # ------------------------------------
     # Base config: cfg, gamma, kimg, batch
@@ -451,6 +459,7 @@ class CommaSeparatedList(click.ParamType):
 @click.option('--subset', help='Train with only N images [default: all]', type=int, metavar='INT')
 @click.option('--mirror', help='Enable dataset x-flips [default: false]', type=bool, metavar='BOOL')
 @click.option('--mirrory', help='Augment dataset with y-flips (default: false)', type=bool, metavar='BOOL')
+@click.option('--16bit', 'is_16_bit', help='Set to true if the training set consists of 16-bit grayscale images [default: false]', type=bool, metavar='BOOL')
 
 # Base config.
 @click.option('--cfg', help='Base config [default: auto]', type=click.Choice(['auto', '11gb-gpu','11gb-gpu-complex', '24gb-gpu','24gb-gpu-complex', '48gb-gpu','48gb-2gpu', 'stylegan2', 'paper256', 'paper512', 'paper1024', 'cifar', 'cifarbaseline', 'aydao']))

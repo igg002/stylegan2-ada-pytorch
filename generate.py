@@ -317,6 +317,7 @@ def zs_to_ws(G,device,label,truncation_psi,zs):
 @click.option('--start', type=float, help='starting truncation value', default=0.0, show_default=True)
 @click.option('--stop', type=float, help='stopping truncation value', default=1.0, show_default=True)
 @click.option('--trunc', 'truncation_psi', type=float, help='Truncation psi', default=1, show_default=True)
+@click.option('--16bit', 'is_16_bit', type=bool, help='Set to True if the model was trained to output 16-bit grayscale images', default=True, show_default=True)
 
 def generate_images(
     ctx: click.Context,
@@ -340,6 +341,7 @@ def generate_images(
     projected_w: Optional[str],
     start: Optional[float],
     stop: Optional[float],
+    is_16_bit: bool,
 ):
     """Generate images using pretrained network pickle.
 
@@ -443,8 +445,15 @@ def generate_images(
             print('Generating image for seed %d (%d/%d) ...' % (seed, seed_idx, len(seeds)))
             z = torch.from_numpy(np.random.RandomState(seed).randn(1, G.z_dim)).to(device)
             img = G(z, label, truncation_psi=truncation_psi, noise_mode=noise_mode)
-            img = (img.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255).to(torch.uint8)
-            PIL.Image.fromarray(img[0].cpu().numpy(), 'RGB').save(f'{outdir}/seed{seed:04d}.png')
+            if is_16_bit:
+                img = (img.permute(0, 2, 3, 1) * 32767.5 + 32767.5).clamp(0, 65535).to(torch.int32)
+                img = img[0].cpu().numpy().astype(np.uint16)
+                mode='I;16'
+            else:
+                img = (img.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255).to(torch.uint8)
+                img = img[0].cpu().numpy()
+                mode = 'RGB'
+            PIL.Image.fromarray(img, mode).save(f'{outdir}/seed{seed:04d}.png')
 
     elif(process=='interpolation' or process=='interpolation-truncation'):
         # create path for frames

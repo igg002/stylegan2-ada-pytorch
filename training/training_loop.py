@@ -65,11 +65,22 @@ def setup_snapshot_image_grid(training_set, random_seed=0):
 
 #----------------------------------------------------------------------------
 
-def save_image_grid(img, fname, drange, grid_size):
-    lo, hi = drange
-    img = np.asarray(img, dtype=np.float32)
-    img = (img - lo) * (255 / (hi - lo))
-    img = np.rint(img).clip(0, 255).astype(np.uint8)
+def save_image_grid(img, fname, drange, grid_size, is_real=False, is_16_bit=False):
+    # Option 1) Convert fake images using min-max normalization (original)
+    # lo, hi = drange
+    # max_val = 65535 if is_16_bit else 255
+    # img = np.asarray(img, dtype=np.float32)
+    # img = (img - lo) * (max_val / (hi - lo))
+    # img = np.rint(img).clip(0, max_val)
+    # img = img.astype(np.uint16 if is_16_bit else np.uint8)
+
+    # Option 2) Convert fake images (expected range [-1, 1]) in the same way
+    # it is converted for generating samples
+    if not is_real:
+        max_val = 65535 if is_16_bit else 255
+        half_max = 32767.5 if is_16_bit else 127.5
+        img = (img * half_max + half_max).clip(0, max_val)
+    img = img.astype(np.uint16 if is_16_bit else np.uint8)
 
     gw, gh = grid_size
     _N, C, H, W = img.shape
@@ -79,7 +90,8 @@ def save_image_grid(img, fname, drange, grid_size):
 
     assert C in [1, 3]
     if C == 1:
-        PIL.Image.fromarray(img[:, :, 0], 'L').save(fname)
+        mode = 'I;16' if is_16_bit else 'L'
+        PIL.Image.fromarray(img[:, :, 0], mode).save(fname)
     if C == 3:
         PIL.Image.fromarray(img, 'RGB').save(fname)
 
@@ -221,14 +233,16 @@ def training_loop(
     grid_size = None
     grid_z = None
     grid_c = None
+    is_16_bit = training_set_kwargs.is_16_bit
     if rank == 0:
         print('Exporting sample images...')
         grid_size, images, labels = setup_snapshot_image_grid(training_set=training_set)
-        save_image_grid(images, os.path.join(run_dir, 'reals.jpg'), drange=[0,255], grid_size=grid_size)
+        max_val = 65535 if is_16_bit else 255
+        save_image_grid(images, os.path.join(run_dir, 'reals.png'), drange=[0,max_val], grid_size=grid_size, is_real=True, is_16_bit=is_16_bit)
         grid_z = torch.randn([labels.shape[0], G.z_dim], device=device).split(batch_gpu)
         grid_c = torch.from_numpy(labels).to(device).split(batch_gpu)
         images = torch.cat([G_ema(z=z, c=c, noise_mode='const').cpu() for z, c in zip(grid_z, grid_c)]).numpy()
-        save_image_grid(images, os.path.join(run_dir, 'fakes_init.jpg'), drange=[-1,1], grid_size=grid_size)
+        save_image_grid(images, os.path.join(run_dir, 'fakes_init.png'), drange=[-1,1], grid_size=grid_size, is_16_bit=is_16_bit)
 
     # Initialize logs.
     if rank == 0:
@@ -262,7 +276,8 @@ def training_loop(
         # Fetch training data.
         with torch.autograd.profiler.record_function('data_fetch'):
             phase_real_img, phase_real_c = next(training_set_iterator)
-            phase_real_img = (phase_real_img.to(device).to(torch.float32) / 127.5 - 1).split(batch_gpu)
+            half_max = 32767.5 if is_16_bit else 127.5
+            phase_real_img = (phase_real_img.to(device).to(torch.float32) / half_max - 1).split(batch_gpu)
             phase_real_c = phase_real_c.to(device).split(batch_gpu)
             all_gen_z = torch.randn([len(phases) * batch_size, G.z_dim], device=device)
             all_gen_z = [phase_gen_z.split(batch_gpu) for phase_gen_z in all_gen_z.split(batch_size)]
@@ -353,7 +368,7 @@ def training_loop(
         # Save image snapshot.
         if (rank == 0) and (image_snapshot_ticks is not None) and (done or cur_tick % image_snapshot_ticks == 0):
             images = torch.cat([G_ema(z=z, c=c, noise_mode='const').cpu() for z, c in zip(grid_z, grid_c)]).numpy()
-            save_image_grid(images, os.path.join(run_dir, f'fakes{cur_nimg//1000:06d}.jpg'), drange=[-1,1], grid_size=grid_size)
+            save_image_grid(images, os.path.join(run_dir, f'fakes{cur_nimg//1000:06d}.png'), drange=[-1,1], grid_size=grid_size, is_16_bit=is_16_bit)
 
         # Save network snapshot.
         snapshot_pkl = None

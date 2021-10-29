@@ -44,13 +44,13 @@ class Dataset(torch.utils.data.Dataset):
             self._raw_idx = np.sort(self._raw_idx[:max_size])
 
         # Apply xflip.
-        self._xflip = np.zeros(self._raw_idx.size, dtype=np.uint8)
+        self._xflip = np.zeros(self._raw_idx.size, dtype=np.uint16 if self._is_16_bit else np.uint8)
         if xflip:
             self._raw_idx = np.tile(self._raw_idx, 2)
             self._xflip = np.concatenate([self._xflip, np.ones_like(self._xflip)])
 
         # Apply yflip.
-        self._yflip = np.zeros(self._raw_idx.size, dtype=np.uint8)
+        self._yflip = np.zeros(self._raw_idx.size, dtype=np.uint16 if self._is_16_bit else np.uint8)
         if yflip:
             self._raw_idx = np.tile(self._raw_idx, 2)
             self._yflip = np.concatenate([self._yflip, np.ones_like(self._yflip)])
@@ -94,7 +94,9 @@ class Dataset(torch.utils.data.Dataset):
         image = self._load_raw_image(self._raw_idx[idx])
         assert isinstance(image, np.ndarray)
         assert list(image.shape) == self.image_shape
-        assert image.dtype == np.uint8
+        assert image.dtype == np.uint8 or image.dtype == np.uint16
+        if image.dtype == np.uint16:
+            image = image.astype(np.int32)
         if self._xflip[idx]:
             assert image.ndim == 3 # CHW
             image = image[:, :, ::-1]
@@ -166,11 +168,13 @@ class Dataset(torch.utils.data.Dataset):
 class ImageFolderDataset(Dataset):
     def __init__(self,
         path,                   # Path to directory or zip.
+        is_16_bit,              # Does the dataset consist of 16-bit grayscale images?
         resolution      = None, # Ensure specific resolution, None = highest available.
         **super_kwargs,         # Additional arguments for the Dataset base class.
     ):
         self._path = path
         self._zipfile = None
+        self._is_16_bit = is_16_bit
 
         if os.path.isdir(self._path):
             self._type = 'dir'
@@ -222,8 +226,10 @@ class ImageFolderDataset(Dataset):
     def _load_raw_image(self, raw_idx):
         fname = self._image_fnames[raw_idx]
         with self._open_file(fname) as f:
-            if pyspng is not None and self._file_ext(fname) == '.png':
+            if pyspng is not None and self._file_ext(fname) == '.png' and not self._is_16_bit:
                 image = pyspng.load(f.read())
+            elif self._is_16_bit:
+                image = np.array(PIL.Image.open(f), dtype=np.uint16)
             else:
                 image = np.array(PIL.Image.open(f))
         if image.ndim == 2:
