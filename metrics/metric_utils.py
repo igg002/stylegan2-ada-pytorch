@@ -177,6 +177,13 @@ class ProgressMonitor:
 
 #----------------------------------------------------------------------------
 
+def bit_conversion_16_to_8(images):
+    converted = images.to(torch.float32) / 256
+    converted = converted.clamp(0, 255).to(torch.uint8)
+    return converted
+
+#----------------------------------------------------------------------------
+
 def compute_feature_stats_for_dataset(opts, detector_url, detector_kwargs, rel_lo=0, rel_hi=1, batch_size=64, data_loader_kwargs=None, max_items=None, **stats_kwargs):
     dataset = dnnlib.util.construct_class_by_name(**opts.dataset_kwargs)
     if data_loader_kwargs is None:
@@ -213,6 +220,8 @@ def compute_feature_stats_for_dataset(opts, detector_url, detector_kwargs, rel_l
     # Main loop.
     item_subset = [(i * opts.num_gpus + opts.rank) % num_items for i in range((num_items - 1) // opts.num_gpus + 1)]
     for images, _labels in torch.utils.data.DataLoader(dataset=dataset, sampler=item_subset, batch_size=batch_size, **data_loader_kwargs):
+        if opts.dataset_kwargs.is_16_bit:
+            images = bit_conversion_16_to_8(images)
         if images.shape[1] == 1:
             images = images.repeat([1, 3, 1, 1])
         features = detector(images.to(opts.device), **detector_kwargs)
@@ -241,7 +250,11 @@ def compute_feature_stats_for_generator(opts, detector_url, detector_kwargs, rel
     # Image generation func.
     def run_generator(z, c):
         img = G(z=z, c=c, **opts.G_kwargs)
-        img = (img * 127.5 + 128).clamp(0, 255).to(torch.uint8)
+        if opts.dataset_kwargs.is_16_bit:
+            img = (img * 32767.5 + 32767.5).clamp(0, 65535).to(torch.int32)
+            img = bit_conversion_16_to_8(img)
+        else:
+            img = (img * 127.5 + 127.5).clamp(0, 255).to(torch.uint8)
         return img
 
     # JIT.
