@@ -153,7 +153,7 @@ def noiseloop(nf, d, seed):
 
     return zs
 
-def images(G,device,inputs,space,truncation_psi,label,noise_mode,outdir,start=None,stop=None):
+def images(G,device,inputs,space,truncation_psi,label,noise_mode,outdir,is_16_bit=False,start=None,stop=None):
     if(start is not None and stop is not None):
         tp = start
         tp_i = (stop-start)/len(inputs)
@@ -170,12 +170,29 @@ def images(G,device,inputs,space,truncation_psi,label,noise_mode,outdir,start=No
                 img = G(z, label, truncation_psi=truncation_psi, noise_mode=noise_mode)
         else:
             if len(i.shape) == 2: 
-              i = torch.from_numpy(i).unsqueeze(0).to(device)
+                i = torch.from_numpy(i).unsqueeze(0).to(device)
+            else:
+                i = torch.from_numpy(i).to(device)
             img = G.synthesis(i, noise_mode=noise_mode, force_fp32=True)
-        img = (img.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255).to(torch.uint8)
-        PIL.Image.fromarray(img[0].cpu().numpy(), 'RGB').save(f'{outdir}/frame{idx:04d}.png')
+        channels = img.shape[1]
+        if channels == 3:
+            img = (img.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255).to(torch.uint8)
+            img = img[0].cpu().numpy()
+            mode = 'RGB'
+        elif channels == 1:
+            if is_16_bit:
+                img = (img.permute(0, 2, 3, 1) * 32767.5 + 32767.5).clamp(0, 65535).to(torch.int32)
+                img = img[0].cpu().numpy().astype(np.uint16)
+                mode='I;16'
+            else:
+                img = (img.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255).to(torch.uint8)
+                img = img[0].cpu().numpy()
+                mode = 'L'
+        else:
+            raise Exception()
+        PIL.Image.fromarray(img, mode).save(f'{outdir}/frame{idx:04d}.png')
 
-def interpolate(G,device,projected_w,seeds,random_seed,space,truncation_psi,label,frames,noise_mode,outdir,interpolation,easing,diameter,start=None,stop=None):
+def interpolate(G,device,projected_w,seeds,random_seed,space,truncation_psi,label,frames,noise_mode,outdir,interpolation,easing,diameter,is_16_bit=False,start=None,stop=None):
     if(interpolation=='noiseloop' or interpolation=='circularloop'):
         if seeds is not None:
             print(f'Warning: interpolation type: "{interpolation}" doesn’t support set seeds.')
@@ -202,7 +219,7 @@ def interpolate(G,device,projected_w,seeds,random_seed,space,truncation_psi,labe
             points = slerp_interpolate(points,frames)
             
     # generate frames
-    images(G,device,points,space,truncation_psi,label,noise_mode,outdir,start,stop)
+    images(G,device,points,space,truncation_psi,label,noise_mode,outdir,is_16_bit,start,stop)
 
 def seeds_to_zs(G,seeds):
     zs = []
@@ -225,8 +242,6 @@ def slerp(t, v0, v1, DOT_THRESHOLD=0.9995):
     Returns:
         v2 (np.ndarray): Interpolation vector between v0 and v1
     '''
-    v0 = v0.cpu().detach().numpy()
-    v1 = v1.cpu().detach().numpy()
     # Copy the vectors to reuse them later
     v0_copy = np.copy(v0)
     v1_copy = np.copy(v1)
@@ -248,7 +263,7 @@ def slerp(t, v0, v1, DOT_THRESHOLD=0.9995):
     s0 = np.sin(theta_0 - theta_t) / sin_theta_0
     s1 = sin_theta_t / sin_theta_0
     v2 = s0 * v0_copy + s1 * v1_copy
-    return torch.from_numpy(v2).to("cuda")
+    return v2
 
 def slerp_interpolate(zs, steps):
     out = []
@@ -283,7 +298,7 @@ def zs_to_ws(G,device,label,truncation_psi,zs):
     for z_idx, z in enumerate(zs):
         z = torch.from_numpy(z).to(device)
         w = G.mapping(z, label, truncation_psi=truncation_psi, truncation_cutoff=8)
-        ws.append(w)
+        ws.append(w.cpu().detach().numpy())
     return ws
 
 #----------------------------------------------------------------------------
@@ -468,9 +483,9 @@ def generate_images(
             vidname = f'{process}-{interpolation}-{diameter}dia-seed_{random_seed}-{fps}fps'
 
         if process=='interpolation-truncation':
-            interpolate(G,device,projected_w,seeds,random_seed,space,truncation_psi,label,frames,noise_mode,dirpath,interpolation,easing,diameter,start,stop)
+            interpolate(G,device,projected_w,seeds,random_seed,space,truncation_psi,label,frames,noise_mode,dirpath,interpolation,easing,diameter,is_16_bit,start,stop)
         else:
-            interpolate(G,device,projected_w,seeds,random_seed,space,truncation_psi,label,frames,noise_mode,dirpath,interpolation,easing,diameter)
+            interpolate(G,device,projected_w,seeds,random_seed,space,truncation_psi,label,frames,noise_mode,dirpath,interpolation,easing,diameter,is_16_bit)
 
         # convert to video
         cmd=f'ffmpeg -y -r {fps} -i {dirpath}/frame%04d.png -vcodec libx264 -pix_fmt yuv420p {outdir}/{vidname}.mp4'
