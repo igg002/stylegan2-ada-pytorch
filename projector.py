@@ -22,6 +22,16 @@ import torch.nn.functional as F
 import dnnlib
 import legacy
 
+def bit_conversion_16_to_8(images):
+    '''
+    Convert 16-bit input images into 8-bit and return the converted images.
+    '''
+    converted = images.to(torch.float32) / 256
+    converted = converted.clamp(0, 255)
+    return converted
+
+#----------------------------------------------------------------------------
+
 def project(
     G,
     target: torch.Tensor, # [C,H,W] and dynamic range [0,255], W & H must match G output resolution
@@ -35,9 +45,10 @@ def project(
     noise_ramp_length          = 0.75,
     regularize_noise_weight    = 1e5,
     verbose                    = False,
+    is_16_bit                  = False,
     device: torch.device
 ):
-    assert target.shape == (G.img_channels, G.img_resolution, G.img_resolution)
+    assert target.shape[1:] == (G.img_resolution, G.img_resolution)
 
     def logprint(*args):
         if verbose:
@@ -93,7 +104,13 @@ def project(
         synth_images = G.synthesis(ws, noise_mode='const')
 
         # Downsample image to 256x256 if it's larger than that. VGG was built for 224x224 images.
-        synth_images = (synth_images + 1) * (255/2)
+        if is_16_bit:
+            synth_images = (synth_images * 32767.5 + 32767.5).clamp(0, 65535)
+            synth_images = bit_conversion_16_to_8(synth_images)
+        else:
+            synth_images = (synth_images + 1) * (255/2)
+        if synth_images.shape[1] == 1:
+            synth_images = synth_images.repeat([1, 3, 1, 1])
         if synth_images.shape[2] > 256:
             synth_images = F.interpolate(synth_images, size=(256, 256), mode='area')
 
@@ -139,13 +156,15 @@ def project(
 @click.option('--seed',                   help='Random seed', type=int, default=303, show_default=True)
 @click.option('--save-video',             help='Save an mp4 video of optimization progress', type=bool, default=True, show_default=True)
 @click.option('--outdir',                 help='Where to save the output images', required=True, metavar='DIR')
+@click.option('--16bit', 'is_16_bit',     help='Set to true if the network is trained to output 16-bit images', type=bool, default=False, show_default=True)
 def run_projection(
     network_pkl: str,
     target_fname: str,
     outdir: str,
     save_video: bool,
     seed: int,
-    num_steps: int
+    num_steps: int,
+    is_16_bit: bool,
 ):
     """Project given image to the latent space of pretrained network pickle.
 
@@ -179,7 +198,8 @@ def run_projection(
         target=torch.tensor(target_uint8.transpose([2, 0, 1]), device=device), # pylint: disable=not-callable
         num_steps=num_steps,
         device=device,
-        verbose=True
+        verbose=True,
+        is_16_bit=is_16_bit
     )
     print (f'Elapsed: {(perf_counter()-start_time):.1f} s')
 
@@ -190,9 +210,15 @@ def run_projection(
     target_pil.save(f'{outdir}/target.png')
     projected_w = projected_w_steps[-1]
     synth_image = G.synthesis(projected_w.unsqueeze(0), noise_mode='const')
-    synth_image = (synth_image + 1) * (255/2)
-    synth_image = synth_image.permute(0, 2, 3, 1).clamp(0, 255).to(torch.uint8)[0].cpu().numpy()
-    PIL.Image.fromarray(synth_image, 'RGB').save(f'{outdir}/proj.png')
+    if is_16_bit:
+        synth_image = (synth_image.permute(0, 2, 3, 1) * 32767.5 + 32767.5).clamp(0, 65535).to(torch.int32)
+        synth_image = synth_image[0].cpu().numpy().astype(np.uint16)
+        mode = 'I;16'
+    else:
+        synth_image = (synth_image + 1) * (255/2)
+        synth_image = synth_image.permute(0, 2, 3, 1).clamp(0, 255).to(torch.uint8)[0].cpu().numpy()
+        mode = 'RGB'
+    PIL.Image.fromarray(synth_image, mode).save(f'{outdir}/proj.png')
     np.savez(f'{outdir}/projected_w.npz', w=projected_w.unsqueeze(0).cpu().numpy())
 
     #moved the video to the end so we can look at images while these videos take time to compile
@@ -201,8 +227,14 @@ def run_projection(
         print (f'Saving optimization progress video "{outdir}/proj.mp4"')
         for projected_w in projected_w_steps:
             synth_image = G.synthesis(projected_w.unsqueeze(0), noise_mode='const')
-            synth_image = (synth_image + 1) * (255/2)
-            synth_image = synth_image.permute(0, 2, 3, 1).clamp(0, 255).to(torch.uint8)[0].cpu().numpy()
+            if is_16_bit:
+                synth_image = (synth_image.permute(0, 2, 3, 1) * 32767.5 + 32767.5).clamp(0, 65535)
+                synth_image = bit_conversion_16_to_8(synth_image)
+                synth_image = synth_image[0].cpu().numpy().astype(np.uint8)
+                synth_image = synth_image.repeat(3, axis=-1)
+            else:
+                synth_image = (synth_image + 1) * (255/2)
+                synth_image = synth_image.permute(0, 2, 3, 1).clamp(0, 255).to(torch.uint8)[0].cpu().numpy()
             video.append_data(np.concatenate([target_uint8, synth_image], axis=1))
         video.close()
 
